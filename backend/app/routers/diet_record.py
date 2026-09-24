@@ -1,0 +1,123 @@
+"""饮食记录 API 路由。"""
+from datetime import datetime, timedelta
+from typing import List
+from fastapi import APIRouter, Query, HTTPException
+from tortoise.expressions import Q
+from app.models.patient import Patient
+from app.models.diet_record import DietRecord
+from app.models.blood_sugar import BloodSugar
+from app.schemas.diet_record import DietRecordCreate, DietRecordUpdate, DietRecordResponse
+from app.core.diet_advisor import diet_advisor
+from typing import Optional
+
+
+router = APIRouter(prefix="/diet", tags=["diet"])
+
+
+# 创建饮食记录
+@router.post("/", response_model=DietRecordResponse)
+async def create_record(data: DietRecordCreate):
+    await Patient.get_or_none(id=data.patient_id)
+    record = await DietRecord.create(**data.model_dump())
+
+    return DietRecordResponse(
+        id=record.id,
+        patient_id=record.patient_id,
+        food_name=record.food_name,
+        calories=record.calories,
+        carbs=record.carbs,
+        protein=record.protein,
+        fat=record.fat,
+        gi_value=record.gi_value,
+        portion=record.portion,
+        meal_type=record.meal_type,
+        eaten_at=record.eaten_at,
+        note=record.note,
+        gi_level=record.gi_level,
+        created_at=record.created_at
+    )
+
+
+# 获取患者饮食记录
+@router.get("/patient/{patient_id}/records", response_model=List[DietRecordResponse])
+async def get_records(patient_id: int, limit: int = 50):
+    await Patient.get_or_none(id=patient_id)
+    records = await DietRecord.filter(patient_id=patient_id).order_by("-eaten_at").limit(limit).all()
+
+    return [
+        DietRecordResponse(
+            id=record.id,
+            patient_id=record.patient_id,
+            food_name=record.food_name,
+            calories=record.calories,
+            carbs=record.carbs,
+            protein=record.protein,
+            fat=record.fat,
+            gi_value=record.gi_value,
+            portion=record.portion,
+            meal_type=record.meal_type,
+            eaten_at=record.eaten_at,
+            note=record.note,
+            gi_level=record.gi_level,
+            created_at=record.created_at
+        )
+        for record in records
+    ]
+
+
+# 更新饮食记录
+@router.put("/{record_id}", response_model=DietRecordResponse)
+async def update_record(record_id: int, data: DietRecordUpdate):
+    record = await DietRecord.get_or_none(id=record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="饮食记录不存在")
+
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(record, key, value)
+
+    await record.save()
+    await record.refresh_from_db()
+
+    return DietRecordResponse(
+        id=record.id,
+        patient_id=record.patient_id,
+        food_name=record.food_name,
+        calories=record.calories,
+        carbs=record.carbs,
+        protein=record.protein,
+        fat=record.fat,
+        gi_value=record.gi_value,
+        portion=record.portion,
+        meal_type=record.meal_type,
+        eaten_at=record.eaten_at,
+        note=record.note,
+        gi_level=record.gi_level,
+        created_at=record.created_at
+    )
+
+
+# 删除饮食记录
+@router.delete("/{record_id}")
+async def delete_record(record_id: int):
+    record = await DietRecord.get_or_none(id=record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="饮食记录不存在")
+    await record.delete()
+    return {"message": "删除成功"}
+
+# 每日营养统计
+@router.get("/patient/{patient_id}/daily")
+async def get_daily_nutrition(patient_id: int, date: Optional[str] = Query(default=None)):
+    patient = await Patient.get_or_none(id=patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="患者不存在")
+    return await diet_advisor.get_daily_nutrition(patient_id, date)
+
+# 饮食推荐
+@router.get("/recommend/{meal_type}")
+async def recommend_meal(patient_id: int, meal_type: str):
+    # 查询患者最近的血糖记录
+    recent_bg = await BloodSugar.get_or_none(patient_id=patient_id).order_by("-created_at").first()
+    return diet_advisor.recommend_meal(meal_type, recent_bg.value)
+
