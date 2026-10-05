@@ -55,28 +55,69 @@ diabetes-health-agent/
 
 ## 本地运行
 
-### 1. 初始化数据库
+准备 Python 3.12+、uv、MySQL 8.0 和 Node.js/npm。以下命令以 PowerShell 为例，初始位置为项目根目录。
 
-创建 MySQL 数据库，并按需导入：
+### 1. 初始化 MySQL 业务数据库
 
-```text
-database/diabetes.sql
+使用 MySQL 8.0（初始化脚本使用 `utf8mb4_0900_ai_ci` 排序规则）。在项目根目录打开 MySQL 客户端：
+
+```powershell
+mysql -h localhost -P 3306 -u root -p
 ```
 
-### 2. 启动后端
+在 MySQL 客户端中执行：
 
-推荐使用 Python 3.12+ 与 uv。
+```sql
+CREATE DATABASE IF NOT EXISTS diabetes CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+USE diabetes;
+SOURCE database/diabetes.sql;
+```
+
+如果使用其他数据库名，请相应修改 `CREATE DATABASE`、`USE` 和后端 `DB_NAME`。也可以使用数据库管理工具，将 `database/diabetes.sql` 导入选定的数据库。
+
+脚本包含删除并重建表以及导入示例数据的语句，仅应导入用于本项目的空数据库；重新导入会覆盖对应表中的现有数据。后端 `app/database.py` 设置了 `generate_schemas=False`，应用启动不会自动创建业务表。
+
+### 2. 配置并启动后端
 
 ```powershell
 cd backend
 Copy-Item .env.example .env
+```
+
+先编辑 `backend/.env`，替换数据库密码和模型 API 密钥等占位值，再执行：
+
+```powershell
 uv sync
 uv run uvicorn main:app --reload --port 8000
 ```
 
-启动前请在 `.env` 中配置数据库连接、模型服务和向量库等参数。不要提交真实密钥。
+必须在 `backend` 目录执行上述启动命令。`main:app` 指向 `backend/main.py` 中的 FastAPI 实例；路由、数据库及知识库代码位于同级的 `app/` 目录。
+
+| 配置项 | 用途 |
+| --- | --- |
+| `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME` | MySQL 连接；`DB_NAME` 必须与导入 SQL 的数据库一致 |
+| `LLM_MODEL`、`LLM_API_KEY`、`LLM_BASE_URL` | 模型名称、真实 API 密钥及服务地址 |
+| `LLM_TEMPERATURE`、`LLM_MAX_TOKENS` | 模型生成参数 |
+| `BG_LOW_THRESHOLD`、`BG_HIGH_THRESHOLD` | 血糖风险规则阈值 |
+| `CHROMA_PERSIST_DIR`、`CHROMA_COLLECTION_NAME` | 本地向量库目录及集合名称，两项均需填写 |
+| `RAG_TOP_K` | 向量检索默认返回数量 |
+
+数据库配置由 `app/config.py` 读取上述 `DB_*` 变量并拼接连接 URL，无需额外设置 `DATABASE_URL`。不要提交填写了真实密钥的 `.env`。
+
+启动成功后访问 [接口文档](http://localhost:8000/docs)。
+
+### 医学知识库初始化
+
+MySQL 保存患者及健康记录，ChromaDB 保存医学知识向量，两者分别初始化：
+
+- `app/core/vector_store.py` 在模块导入时创建本地 ChromaDB 客户端，并加载嵌入模型 `paraphrase-multilingual-MiniLM-L12-v2`。模型未缓存时需要联网下载。
+- `main.py` 的启动生命周期调用 `init_knowledge_base()`。当前集合为空时，将 `app/core/knowledge_base.py` 中的内置医学知识写入 ChromaDB；集合已有任意数据时跳过导入。
+- `CHROMA_PERSIST_DIR=./data/chroma_db` 相对于启动时的工作目录解析。按本文从 `backend` 启动时，数据保存在 `backend/data/chroma_db/`。
+- 此过程不会创建 MySQL 表，也不会自动更新非空集合中的知识内容。
 
 ### 3. 启动前端
+
+另开终端，从项目根目录执行：
 
 ```powershell
 cd frontend
@@ -84,7 +125,17 @@ npm install
 npm run dev
 ```
 
-具体环境变量名及启动差异请同时参考 `backend/README.md` 和前端配置。
+开发服务配置端口为 `3000`，默认访问 [前端页面](http://localhost:3000)，实际地址以终端输出为准。
+
+| 文件 | 作用 |
+| --- | --- |
+| `frontend/package.json` | `dev`、`build` 和 `preview` 命令 |
+| `frontend/vite.config.ts` | Vue 插件、`@` 路径别名、开发端口及 API 代理 |
+| `frontend/src/api/index.ts` | Axios 客户端，`baseURL` 为 `/api` |
+
+开发时，Vite 将 `/api` 请求转发至 `http://127.0.0.1:8000`，保留路径前缀，与后端路由的 `/api` 前缀一致。修改后端地址或端口时，请同步修改 `frontend/vite.config.ts` 的 `server.proxy['/api'].target`。当前前端未提供 `.env.example`，也未通过环境变量配置 API 地址。Vite 的开发代理不适用于生产部署，部署时需要为 `/api` 配置相应反向代理。
+
+后端细节见 [backend/README.md](backend/README.md)。
 
 ## 设计要点
 
